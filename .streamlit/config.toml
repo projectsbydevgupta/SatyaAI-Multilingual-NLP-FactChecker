@@ -1,0 +1,3 @@
+[server]
+# Disables hot-reload file watcher — stops torchvision/transformers warning spam
+fileWatcherType = "none"

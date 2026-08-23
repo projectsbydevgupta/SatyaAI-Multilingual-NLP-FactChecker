@@ -1,14 +1,16 @@
 import streamlit as st
+import string
 import pickle
 import re
 import os
-import requests
 import json
+import requests
 import numpy as np
 import torch
 import pandas as pd
 from datetime import datetime, timedelta
 from transformers import AutoTokenizer, AutoModel
+from groq import Groq
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -27,6 +29,12 @@ st.caption("Cross-Lingual RAG-Based Fact-Checking System for Regional and Code-M
 # ═══════════════════════════════════════════════════════════════
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
+def _model_path(name, v2_name=None):
+    """Return v2 path if it exists, else fall back to name."""
+    v2 = os.path.join(MODELS_DIR, v2_name or name)
+    base = os.path.join(MODELS_DIR, name)
+    return v2 if os.path.exists(v2) else base
+
 @st.cache_resource
 def load_models():
     def load_pkl(path):
@@ -34,41 +42,29 @@ def load_models():
             if os.path.exists(path):
                 with open(path, "rb") as f:
                     return pickle.load(f)
-            return None
         except Exception:
-            return None
-
-    tfidf_path = (
-        os.path.join(MODELS_DIR, "tfidf_v2.pkl")
-        if os.path.exists(os.path.join(MODELS_DIR, "tfidf_v2.pkl"))
-        else os.path.join(MODELS_DIR, "tfidf.pkl")
-    )
-    lr_path = (
-        os.path.join(MODELS_DIR, "logreg_v2.pkl")
-        if os.path.exists(os.path.join(MODELS_DIR, "logreg_v2.pkl"))
-        else os.path.join(MODELS_DIR, "logreg.pkl")
-    )
+            pass
+        return None
 
     return (
-        load_pkl(tfidf_path),
-        load_pkl(lr_path),
-        load_pkl(os.path.join(MODELS_DIR, "svm_v2.pkl")),
-        load_pkl(os.path.join(MODELS_DIR, "xlmr_classifier.pkl")),
+        load_pkl(_model_path("tfidf.pkl",   "tfidf_v2.pkl")),
+        load_pkl(_model_path("logreg.pkl",  "logreg_v2.pkl")),
+        load_pkl(_model_path("svm_v2.pkl")),
+        load_pkl(_model_path("xlmr_classifier.pkl")),
     )
 
 
 @st.cache_resource
 def load_xlmr_backbone():
-    MODEL_NAME     = "cardiffnlp/twitter-xlm-roberta-base"
-    xlmr_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    xlmr_base      = AutoModel.from_pretrained(MODEL_NAME)
-    xlmr_base.eval()
-    return xlmr_tokenizer, xlmr_base
+    name = "cardiffnlp/twitter-xlm-roberta-base"
+    tokenizer = AutoTokenizer.from_pretrained(name)
+    model = AutoModel.from_pretrained(name)
+    model.eval()
+    return tokenizer, model
 
 
 tfidf, model_lr, model_svm, model_xlmr = load_models()
 
-# ── Debug: show model load status in sidebar ───────────────────
 if tfidf is None:
     st.error(
         f"❌ **Models not found!**\n\n"
@@ -87,63 +83,71 @@ if "claim_input" not in st.session_state:
 # HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════════
 def clean_text(text):
-    text = text.lower()
-    text = re.sub(r"[^a-zA-Z0-9 ]", "", text)
-    return text
+    return re.sub(r"[^a-zA-Z0-9 ]", "", text.lower())
 
+
+# Merged TRUE/REAL → success, FALSE/FAKE → error, rest → warning
+_LABEL_MAP = {
+    "TRUE":         ("✅ TRUE",          "success"),
+    "REAL":         ("✅ REAL",          "success"),
+    "FALSE":        ("🚨 FALSE",         "error"),
+    "FAKE":         ("🚨 FAKE",          "error"),
+    "UNVERIFIABLE": ("❓ UNVERIFIABLE",  "warning"),
+    "ERROR":        ("⚠️ ERROR",         "error"),
+}
 
 def label_badge(label):
-    label = str(label).upper()
-    if label == "TRUE":
-        return "✅ TRUE", "success"
-    elif label == "FALSE":
-        return "🚨 FALSE", "error"
-    elif label == "REAL":
-        return "✅ REAL", "success"
-    elif label == "FAKE":
-        return "🚨 FAKE", "error"
-    elif label == "UNVERIFIABLE":
-        return "❓ UNVERIFIABLE", "warning"
-    elif label == "ERROR":
-        return "⚠️ ERROR", "error"
-    else:
-        return "⚠️ MISLEADING", "warning"
+    return _LABEL_MAP.get(str(label).upper(), ("⚠️ MISLEADING", "warning"))
 
 
 def get_xlmr_embedding(text, tokenizer, model):
-    encoded = tokenizer(
-        text, return_tensors="pt",
-        truncation=True, max_length=128, padding=True
-    )
+    encoded = tokenizer(text, return_tensors="pt", truncation=True, max_length=128, padding=True)
     with torch.no_grad():
         output = model(**encoded)
     return output.last_hidden_state[:, 0, :].numpy()
 
 
-def get_evidence(claim, max_articles=3):
+# Common words that add noise to a news search query
+_STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+    "has", "have", "had", "that", "this", "it", "its", "as", "near", "into",
+    "up", "out", "about", "than", "their", "they", "he", "she", "we"
+}
+
+def _extract_keywords(claim, n=8):
+    """Return the n most informative words from the claim (skip stopwords)."""
+    words = claim.translate(str.maketrans("", "", string.punctuation)).split()
+    meaningful = [w for w in words if w.lower() not in _STOPWORDS and len(w) > 2]
+    # Prefer longer words (more specific) and take first n
+    meaningful.sort(key=len, reverse=True)
+    return " ".join(meaningful[:n])
+
+
+def get_evidence(claim, max_articles=5):
     try:
         GNEWS_KEY = st.secrets["GNEWS_API_KEY"]
         from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        to_date   = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
-        keywords  = " ".join(claim.split()[:6])
+        keywords  = _extract_keywords(claim)
         url = (
             f"https://gnews.io/api/v4/search"
             f"?q={requests.utils.quote(keywords)}"
             f"&token={GNEWS_KEY}&lang=en"
             f"&max={max_articles}"
-            f"&from={from_date}&to={to_date}"
+            f"&from={from_date}"
         )
-        response = requests.get(url, timeout=10)
-        articles = response.json().get("articles", [])
+        articles = requests.get(url, timeout=10).json().get("articles", [])
         if not articles:
             return None, "gnews_empty"
-        ev = ""
+        lines = []
         for i, a in enumerate(articles, 1):
-            ev += f"[{i}] {a['title']}\n"
-            ev += f"    📰 Source : {a['source']['name']}\n"
-            ev += f"    🔗 URL    : {a.get('url', 'N/A')}\n"
-            ev += f"    📝 Desc   : {a.get('description', 'No description')}\n\n"
-        return ev.strip(), "gnews"
+            lines.append(
+                f"[{i}] {a['title']}\n"
+                f"    📰 Source : {a['source']['name']}\n"
+                f"    🔗 URL    : {a.get('url', 'N/A')}\n"
+                f"    📝 Desc   : {a.get('description', 'No description')}"
+            )
+        return "\n\n".join(lines), "gnews"
     except Exception:
         return None, "gnews_error"
 
@@ -151,7 +155,6 @@ def get_evidence(claim, max_articles=3):
 def groq_check(claim, lr_label, lr_conf, xlmr_label, xlmr_conf,
                svm_label, ens_label, evidence_text, evidence_source):
     try:
-        from groq import Groq
         client = Groq(api_key=st.secrets["GROQ_API_KEY_NLP"])
 
         ml_summary = f"- Logistic Regression : {lr_label} ({lr_conf}% confidence)\n"
@@ -159,21 +162,28 @@ def groq_check(claim, lr_label, lr_conf, xlmr_label, xlmr_conf,
             ml_summary += f"- XLM-RoBERTa         : {xlmr_label} ({xlmr_conf}% confidence)\n"
         if svm_label  != "N/A":
             ml_summary += f"- SVM                 : {svm_label}\n"
-        if ens_label  != "N/A":
-            ml_summary += f"- Ensemble (best)     : {ens_label}\n"
+        ml_summary += f"- Ensemble (best)     : {ens_label}"
 
         ev_instruction = (
             "Real-time GNews evidence is provided. Use it as PRIMARY source. Cite article source in reason."
             if evidence_source == "gnews"
-            else "No recent GNews evidence. Verify using YOUR OWN knowledge. Mention this in reason."
+            else (
+                "No recent GNews evidence found. You MUST use your own training knowledge to verify this claim. "
+                "Indian political events, protests, Parliament incidents, and police actions are well-documented "
+                "in your training data. Do NOT default to UNVERIFIABLE just because GNews has no results — "
+                "only use UNVERIFIABLE if you genuinely have NO knowledge of this event whatsoever."
+            )
         )
 
-        system_prompt = f"""You are SatyaAI, an expert Indian fact-checker.
+        system_prompt = f"""You are SatyaAI, an expert Indian fact-checker with deep knowledge of Indian politics, \
+news, and current events.
 Rules:
 1. {ev_instruction}
-2. Only mark UNVERIFIABLE if truly cannot determine.
-3. Flag low ML confidence (below 60%) as suspicious.
-4. Output ONLY valid JSON — no extra text.
+2. UNVERIFIABLE is a last resort — only use it if you have absolutely no information about this claim.
+3. For specific claims about Indian protests, Parliament, government actions, or named organizations, \
+you almost certainly have training knowledge — use it confidently.
+4. Flag low ML confidence (below 60%) as suspicious.
+5. Output ONLY valid JSON — no extra text.
 Output format:
 {{
   "verdict": "REAL or FAKE or UNVERIFIABLE",
@@ -194,16 +204,16 @@ News Evidence ({evidence_source}):
 
 Return your JSON verdict.
 """
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        raw = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_prompt}
             ],
             temperature=0.2,
             max_tokens=400
-        )
-        raw = response.choices[0].message.content.strip()
+        ).choices[0].message.content.strip()
+
         try:
             return json.loads(raw)
         except Exception:
@@ -232,7 +242,7 @@ with st.sidebar:
         "3. 🧠 XLM-RoBERTa → Transformer prediction\n"
         "4. 🗳️ Soft Voting → Ensemble verdict\n"
         "5. 📰 GNews → Live evidence (last 30 days)\n"
-        "6. 🤖 Groq LLaMA → Final AI verdict\n"
+        "6. 🤖 Groq → Final AI verdict\n"
         "7. ✅ REAL / FAKE / UNVERIFIABLE"
     )
     st.markdown("---")
@@ -302,8 +312,7 @@ if analyze_btn:
         st.stop()
 
     # Step 1: TF-IDF
-    cleaned = clean_text(claim)
-    vec     = tfidf.transform([cleaned])
+    vec = tfidf.transform([clean_text(claim)])
 
     # Step 2: Logistic Regression
     lr_label   = model_lr.predict(vec)[0]
@@ -333,12 +342,11 @@ if analyze_btn:
         xlmr_label, xlmr_conf, xlmr_proba, xlmr_classes = "N/A", 0, [], []
 
     # Step 5: Ensemble (soft voting)
-    classes       = lr_classes
     active_probas = [lr_proba]
     if model_svm:   active_probas.append(svm_proba)
     if model_xlmr:  active_probas.append(xlmr_proba)
     ensemble_proba = np.mean(active_probas, axis=0)
-    ens_label      = classes[int(np.argmax(ensemble_proba))]
+    ens_label      = lr_classes[int(np.argmax(ensemble_proba))]
     ens_conf       = round(max(ensemble_proba) * 100, 2)
 
     # Step 6: GNews Evidence
@@ -385,7 +393,7 @@ if analyze_btn:
             st.text(evidence)
         else:
             st.warning("📭 No recent news found in GNews (last 30 days).")
-            st.info("🧠 **Fallback: Groq LLaMA Knowledge Base**\n\nGroq will verify using its own training knowledge.")
+            st.info("🧠 **Fallback: Groq Knowledge Base**\n\nGroq will verify using its own training knowledge.")
 
     # ── ROW 2: SVM | Ensemble ───────────────────────────────────
     st.markdown("---")
@@ -411,14 +419,14 @@ if analyze_btn:
         getattr(st, ens_type)(f"{ens_text}\n\n**Ensemble Confidence: {ens_conf}%**")
         st.progress(int(ens_conf))
         with st.expander("Ensemble Class Probabilities"):
-            for cls, prob in zip(classes, ensemble_proba):
+            for cls, prob in zip(lr_classes, ensemble_proba):
                 st.write(f"`{cls}`: {round(prob*100, 1)}%")
 
     # ── GROQ FINAL VERDICT ──────────────────────────────────────
     st.markdown("---")
-    st.subheader("🧠 Groq LLaMA — Final AI Verdict")
+    st.subheader("🧠 Groq — Final AI Verdict")
 
-    with st.spinner("🤖 Asking Groq LLaMA for final verdict..."):
+    with st.spinner("🤖 Asking Groq for final verdict..."):
         groq_result = groq_check(
             claim=claim,
             lr_label=lr_label, lr_conf=lr_conf,
@@ -448,7 +456,7 @@ if analyze_btn:
         if source_used == "GNews API":
             st.success("📡 **Verified using: GNews API** (Real-time news articles)")
         else:
-            st.info("🧠 **Verified using: Groq LLaMA Knowledge Base**\n\nNo recent GNews articles found.")
+            st.info("🧠 **Verified using: Groq Knowledge Base**\n\nNo recent GNews articles found.")
         if flags:
             st.markdown("**🚩 Flags:**")
             for flag in flags:
@@ -458,8 +466,8 @@ if analyze_btn:
     st.markdown("---")
     st.subheader("📋 Model Agreement Summary")
 
-    summary_data = {
-        "Model"      : ["Logistic Regression", "XLM-RoBERTa", "SVM", "Ensemble", "Groq LLaMA"],
+    st.table(pd.DataFrame({
+        "Model"      : ["Logistic Regression", "XLM-RoBERTa", "SVM", "Ensemble", "Groq"],
         "Prediction" : [lr_label, xlmr_label, svm_label, ens_label, verdict],
         "Confidence" : [
             f"{lr_conf}%",
@@ -475,8 +483,6 @@ if analyze_btn:
             "Soft Voting (LR+SVM+XLMR)",
             source_used
         ]
-    }
-
-    st.table(pd.DataFrame(summary_data))
+    }))
     st.markdown("---")
-    st.caption("🔬 SatyaAI — XLM-RoBERTa + TF-IDF (LR+SVM) + Groq LLaMA 3.3 70B | NLP Project 2025")
+    st.caption("🔬 SatyaAI — XLM-RoBERTa + TF-IDF (LR+SVM) + Groq openai/gpt-oss-120b | NLP Project 2025")
