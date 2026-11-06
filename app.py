@@ -9,8 +9,31 @@ import numpy as np
 import torch
 import pandas as pd
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 from transformers import AutoTokenizer, AutoModel
 from groq import Groq
+
+# Load environment variables from .env if present
+load_dotenv()
+
+# Helper for retrieving secrets from st.secrets or os.environ
+def get_secret(key, alt_key=None, default=None):
+    """Retrieve secret from Streamlit secrets or environment variables."""
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+        if alt_key and alt_key in st.secrets:
+            return st.secrets[alt_key]
+    except Exception:
+        pass
+    val = os.getenv(key)
+    if val:
+        return val
+    if alt_key:
+        val = os.getenv(alt_key)
+        if val:
+            return val
+    return default
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -119,6 +142,9 @@ def _extract_keywords(claim, n=8):
     """Return the n most informative words from the claim (skip stopwords)."""
     words = claim.translate(str.maketrans("", "", string.punctuation)).split()
     meaningful = [w for w in words if w.lower() not in _STOPWORDS and len(w) > 2]
+    # Fallback to initial words if all words were filtered out
+    if not meaningful:
+        meaningful = words[:n] if words else [claim[:30]]
     # Prefer longer words (more specific) and take first n
     meaningful.sort(key=len, reverse=True)
     return " ".join(meaningful[:n])
@@ -126,9 +152,13 @@ def _extract_keywords(claim, n=8):
 
 def get_evidence(claim, max_articles=5):
     try:
-        GNEWS_KEY = st.secrets["GNEWS_API_KEY"]
+        GNEWS_KEY = get_secret("GNEWS_API_KEY")
+        if not GNEWS_KEY:
+            return None, "gnews_missing_key"
         from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
         keywords  = _extract_keywords(claim)
+        if not keywords.strip():
+            return None, "gnews_empty"
         url = (
             f"https://gnews.io/api/v4/search"
             f"?q={requests.utils.quote(keywords)}"
@@ -136,14 +166,17 @@ def get_evidence(claim, max_articles=5):
             f"&max={max_articles}"
             f"&from={from_date}"
         )
-        articles = requests.get(url, timeout=10).json().get("articles", [])
+        resp = requests.get(url, timeout=10)
+        articles = resp.json().get("articles", []) if resp.status_code == 200 else []
         if not articles:
             return None, "gnews_empty"
         lines = []
         for i, a in enumerate(articles, 1):
+            source_info = a.get("source") or {}
+            source_name = source_info.get("name", "Unknown Source")
             lines.append(
-                f"[{i}] {a['title']}\n"
-                f"    📰 Source : {a['source']['name']}\n"
+                f"[{i}] {a.get('title', 'No Title')}\n"
+                f"    📰 Source : {source_name}\n"
                 f"    🔗 URL    : {a.get('url', 'N/A')}\n"
                 f"    📝 Desc   : {a.get('description', 'No description')}"
             )
@@ -155,7 +188,17 @@ def get_evidence(claim, max_articles=5):
 def groq_check(claim, lr_label, lr_conf, xlmr_label, xlmr_conf,
                svm_label, ens_label, evidence_text, evidence_source):
     try:
-        client = Groq(api_key=st.secrets["GROQ_API_KEY_NLP"])
+        groq_key = get_secret("GROQ_API_KEY_NLP", "GROQ_API_KEY")
+        if not groq_key:
+            return {
+                "verdict": "ERROR",
+                "confidence": 0,
+                "reason": "Groq API key not configured. Please set GROQ_API_KEY in .env or .streamlit/secrets.toml",
+                "source_used": "None",
+                "flags": ["Missing API Key"]
+            }
+
+        client = Groq(api_key=groq_key)
 
         ml_summary = f"- Logistic Regression : {lr_label} ({lr_conf}% confidence)\n"
         if xlmr_label != "N/A":
@@ -215,6 +258,9 @@ Return your JSON verdict.
         ).choices[0].message.content.strip()
 
         try:
+            json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(0))
             return json.loads(raw)
         except Exception:
             return {"verdict": "UNVERIFIABLE", "confidence": 0,
@@ -391,6 +437,9 @@ if analyze_btn:
             st.success("✅ Evidence retrieved from **GNews API**")
             st.markdown("📡 **Source: GNews API — Real-time News**")
             st.text(evidence)
+        elif evidence_source == "gnews_missing_key":
+            st.warning("⚠️ GNews API key not configured.")
+            st.info("🧠 **Fallback: Groq Knowledge Base**\n\nGroq will verify using its own training knowledge.")
         else:
             st.warning("📭 No recent news found in GNews (last 30 days).")
             st.info("🧠 **Fallback: Groq Knowledge Base**\n\nGroq will verify using its own training knowledge.")

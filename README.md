@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11-blue?style=for-the-badge&logo=python)
 ![Streamlit](https://img.shields.io/badge/Streamlit-Live-red?style=for-the-badge&logo=streamlit)
 ![XLM-RoBERTa](https://img.shields.io/badge/XLM--RoBERTa-Transformer-orange?style=for-the-badge)
-![Groq](https://img.shields.io/badge/Groq-LLaMA_3.3_70B-purple?style=for-the-badge)
+![Groq](https://img.shields.io/badge/Groq-Fast_LLM_Inference-purple?style=for-the-badge)
 
 **Cross-Lingual RAG-Based Fact-Checking System**
 *Supports English, Hindi, and Hinglish claims*
@@ -36,7 +36,7 @@ Given a claim in **English, Hindi, or Hinglish**, the system:
 1. Translates it to English using Facebook's **NLLB-200**
 2. Runs it through **3 ML models** (Logistic Regression, SVM, XLM-RoBERTa)
 3. Fetches **real-time news evidence** from GNews API
-4. Gets a **final verdict** from Groq's LLaMA 3.3 70B
+4. Gets a **final verdict** from Groq LLM reasoning (`openai/gpt-oss-120b`)
 
 ---
 
@@ -150,7 +150,7 @@ SatyaAI/
 | **Features** | TF-IDF (Word + Character N-grams) |
 | **ML Models** | Scikit-learn (Logistic Regression, LinearSVC) |
 | **Transformer** | XLM-RoBERTa — `cardiffnlp/twitter-xlm-roberta-base` |
-| **LLM Verdict** | Groq — LLaMA 3.3 70B Versatile |
+| **LLM Verdict** | Groq — Fast LLM Inference (`openai/gpt-oss-120b`) |
 | **Live Evidence** | GNews API |
 | **Hosting** | Streamlit Community Cloud |
 
