@@ -210,7 +210,7 @@ The full model training pipeline is in [`notebooks/Satya_AI.ipynb`](notebooks/Sa
 **Dev Gupta**  
 B.Tech CSE — Data Science & AI | BML Munjal University | 2023–2027  
 
-[![GitHub](https://img.shields.io/badge/GitHub-Profile-black?style=flat&logo=github)](https://github.com/devgupta111)
+[![GitHub](https://img.shields.io/badge/GitHub-Profile-black?style=flat&logo=github)](https://github.com/projectsbydevgupta)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-blue?style=flat&logo=linkedin)](https://linkedin.com/in/devgupta111)
 
 ---
