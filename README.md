@@ -7,10 +7,11 @@
 ![XLM-RoBERTa](https://img.shields.io/badge/XLM--RoBERTa-Transformer-orange?style=for-the-badge)
 ![Groq](https://img.shields.io/badge/Groq-Fast_LLM_Inference-purple?style=for-the-badge)
 
-**Cross-Lingual RAG-Based Fact-Checking System**
-*Supports English, Hindi, and Hinglish claims*
+**Cross-Lingual RAG-Based Fact-Checking System** *Supports English, Hindi, and Hinglish claims*
 
-[🚀 Live Demo](https://satya-ai-fake-news-detector-by-dev-gupta.streamlit.app/) &nbsp;|&nbsp; [📓 Training Notebook](notebooks/) &nbsp;|&nbsp; [📊 Results](#-results)
+<br/>
+
+🚀 [Live Demo](https://satya-ai-fake-news-detector-by-dev-gupta.streamlit.app/) | 📓 [Training Notebook](notebooks/Satya_AI.ipynb) | 📊 [Results](#-results)
 
 </div>
 
