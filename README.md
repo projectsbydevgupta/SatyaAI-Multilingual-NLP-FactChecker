@@ -72,9 +72,9 @@ Given a claim in **English, Hindi, or Hinglish**, the system:
         ┌──────────┼──────────┐
         ▼                     ▼
 ┌──────────────┐     ┌─────────────────┐
-│  GNews API   │     │  Groq LLaMA 3.3 │
-│ (Live News   │────▶│     70B         │
-│  Evidence)   │     │  (Final Verdict)│
+│  GNews API   │     │    Groq LLM     │
+│ (Live News   │────▶│ (GPT-OSS-120B)  │
+│  Evidence)   │     │ (Final Verdict) │
 └──────────────┘     └─────────────────┘
                               │
                               ▼
