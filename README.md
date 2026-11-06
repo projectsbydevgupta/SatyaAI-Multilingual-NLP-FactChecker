@@ -160,7 +160,7 @@ SatyaAI/
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/devgupta111/SatyaAI-Fake-News-Detector.git
+git clone https://github.com/projectsbydevgupta/SatyaAI-Multilingual-NLP-FactChecker.git
 cd SatyaAI
 
 # 2. Install dependencies

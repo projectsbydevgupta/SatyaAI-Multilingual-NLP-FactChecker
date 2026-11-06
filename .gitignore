@@ -34,10 +34,14 @@ data/data/
 # ── Duplicate / unnecessary formats ───────────────────────────
 *.xlsx
 
-# ── Private / sensitive folders ───────────────────────────────
+# ── Private / sensitive folders & documents ───────────────────
 report/
 logs/
 downloaded/
+*.pdf
+*.docx
+*.pptx
+*.doc
 
 # ── OS files ──────────────────────────────────────────────────
 .DS_Store
